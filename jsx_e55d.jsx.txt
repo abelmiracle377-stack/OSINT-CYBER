@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://127.0.0.1:5000';
@@ -7,19 +7,34 @@ export default function App() {
   const [target, setTarget] = useState('127.0.0.1');
   const [scanResults, setScanResults] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
+  const [assets, setAssets] = useState([]);
+  const [assetForm, setAssetForm] = useState({
+    asset_id: '', name: '', asset_type: 'domain', address: '',
+    owner: '', environment: 'production', criticality: 'medium', notes: '',
+  });
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
-  async function post(path, payload) {
+  async function request(path, options = {}) {
     const response = await fetch(`${API_BASE}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options,
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
     return data;
   }
+
+  async function loadAssets() {
+    try {
+      const data = await request('/api/assets');
+      setAssets(data.assets || []);
+    } catch (error) {
+      setMessage(`Inventory could not be loaded: ${error.message}`);
+    }
+  }
+
+  useEffect(() => { loadAssets(); }, []);
 
   async function handleScan(event) {
     event.preventDefault();
@@ -28,7 +43,9 @@ export default function App() {
     setScanResults([]);
     setRecommendations([]);
     try {
-      const data = await post('/api/scan', { target });
+      const data = await request('/api/scan', {
+        method: 'POST', body: JSON.stringify({ target }),
+      });
       setScanResults(data.scan_results || []);
       setMessage(`Inventory complete for ${data.target}. Open ports: ${(data.scan_results || []).length}.`);
     } catch (error) {
@@ -41,9 +58,49 @@ export default function App() {
   async function handleAnalyze() {
     setLoading(true);
     try {
-      const data = await post('/api/analyze', { scan_results: scanResults });
+      const data = await request('/api/analyze', {
+        method: 'POST', body: JSON.stringify({ scan_results: scanResults }),
+      });
       setRecommendations(data.recommendations || []);
       setMessage('Defensive recommendations generated. These are guidance, not vulnerability findings.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function updateAssetField(event) {
+    const { name, value } = event.target;
+    setAssetForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleAssetSave(event) {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      await request('/api/assets', {
+        method: 'POST', body: JSON.stringify(assetForm),
+      });
+      setAssetForm({
+        asset_id: '', name: '', asset_type: 'domain', address: '',
+        owner: '', environment: 'production', criticality: 'medium', notes: '',
+      });
+      await loadAssets();
+      setMessage('Asset saved to the local inventory.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAssetDelete(assetId) {
+    setLoading(true);
+    try {
+      await request(`/api/assets/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
+      await loadAssets();
+      setMessage(`Removed ${assetId} from the local inventory.`);
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -55,18 +112,13 @@ export default function App() {
     <main className="container">
       <header>
         <h1>OSINT-CYBER</h1>
-        <p>Scoped network inventory and defensive configuration guidance.</p>
+        <p>Scoped network inventory, asset management, and defensive configuration guidance.</p>
       </header>
 
       <form className="input-group" onSubmit={handleScan}>
         <label htmlFor="target">Authorized target</label>
-        <input
-          id="target"
-          value={target}
-          onChange={(event) => setTarget(event.target.value)}
-          placeholder="127.0.0.1 or an approved hostname"
-          required
-        />
+        <input id="target" value={target} onChange={(event) => setTarget(event.target.value)}
+          placeholder="127.0.0.1 or an approved hostname" required />
         <button type="submit" disabled={loading}>Run inventory</button>
       </form>
 
@@ -77,18 +129,14 @@ export default function App() {
         {scanResults.length ? (
           <table>
             <thead><tr><th>Port</th><th>Service</th><th>Version</th><th>State</th></tr></thead>
-            <tbody>
-              {scanResults.map((item) => (
-                <tr key={`${item.protocol}-${item.port}`}>
-                  <td>{item.port}/{item.protocol}</td>
-                  <td>{item.service}</td>
-                  <td>{item.version}</td>
-                  <td>{item.state}</td>
-                </tr>
-              ))}
-            </tbody>
+            <tbody>{scanResults.map((item) => (
+              <tr key={`${item.protocol}-${item.port}`}>
+                <td>{item.port}/{item.protocol}</td><td>{item.service}</td>
+                <td>{item.version}</td><td>{item.state}</td>
+              </tr>
+            ))}</tbody>
           </table>
-        ) : <p>No inventory results yet.</p>}
+        ) : <p>No scan results yet.</p>}
         <button type="button" onClick={handleAnalyze} disabled={loading || !scanResults.length}>
           Get defensive recommendations
         </button>
@@ -97,18 +145,66 @@ export default function App() {
       <section className="card" aria-labelledby="guidance-heading">
         <h2 id="guidance-heading">Defensive recommendations</h2>
         {recommendations.length ? (
-          <ul>
-            {recommendations.map((item) => (
-              <li key={`${item.port}-${item.service}`}>
-                <strong>{item.service} on port {item.port}:</strong> {item.recommendation}
-              </li>
-            ))}
-          </ul>
+          <ul>{recommendations.map((item) => (
+            <li key={`${item.port}-${item.service}`}>
+              <strong>{item.service} on port {item.port}:</strong> {item.recommendation}
+            </li>
+          ))}</ul>
         ) : <p>Run an inventory and request guidance to see recommendations.</p>}
       </section>
 
+      <section className="card" aria-labelledby="assets-heading">
+        <h2 id="assets-heading">Asset inventory</h2>
+        <form className="asset-form" onSubmit={handleAssetSave}>
+          <label htmlFor="asset_id">Asset ID</label>
+          <input id="asset_id" name="asset_id" value={assetForm.asset_id}
+            onChange={updateAssetField} placeholder="asset-001" required />
+          <label htmlFor="asset_name">Asset name</label>
+          <input id="asset_name" name="name" value={assetForm.name}
+            onChange={updateAssetField} placeholder="Production website" required />
+          <label htmlFor="asset_address">Address (metadata only)</label>
+          <input id="asset_address" name="address" value={assetForm.address}
+            onChange={updateAssetField} placeholder="https://example.org" required />
+          <label htmlFor="asset_type">Type</label>
+          <select id="asset_type" name="asset_type" value={assetForm.asset_type} onChange={updateAssetField}>
+            {['domain', 'ip', 'web_app', 'server', 'endpoint', 'cloud_resource', 'other'].map((value) =>
+              <option key={value} value={value}>{value}</option>)}
+          </select>
+          <label htmlFor="asset_environment">Environment</label>
+          <select id="asset_environment" name="environment" value={assetForm.environment} onChange={updateAssetField}>
+            {['production', 'staging', 'development', 'test', 'unknown'].map((value) =>
+              <option key={value} value={value}>{value}</option>)}
+          </select>
+          <label htmlFor="asset_criticality">Criticality</label>
+          <select id="asset_criticality" name="criticality" value={assetForm.criticality} onChange={updateAssetField}>
+            {['low', 'medium', 'high', 'critical'].map((value) =>
+              <option key={value} value={value}>{value}</option>)}
+          </select>
+          <label htmlFor="asset_owner">Owner</label>
+          <input id="asset_owner" name="owner" value={assetForm.owner} onChange={updateAssetField} />
+          <label htmlFor="asset_notes">Notes</label>
+          <textarea id="asset_notes" name="notes" value={assetForm.notes} onChange={updateAssetField} rows="2" />
+          <button type="submit" disabled={loading}>Save asset</button>
+        </form>
+
+        <h3>Saved assets ({assets.length})</h3>
+        {assets.length ? (
+          <table>
+            <thead><tr><th>Name</th><th>Address</th><th>Environment</th><th>Criticality</th><th>Action</th></tr></thead>
+            <tbody>{assets.map((asset) => (
+              <tr key={asset.asset_id}>
+                <td>{asset.name}</td><td>{asset.address}</td>
+                <td>{asset.environment}</td><td>{asset.criticality}</td>
+                <td><button type="button" disabled={loading} onClick={() => handleAssetDelete(asset.asset_id)}>Delete</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        ) : <p>No assets saved yet. Add only assets you are authorized to manage.</p>}
+      </section>
+
       <footer>
-        Use only assets you own or are explicitly authorized to assess. This tool does not exploit
+        Only assess assets you own or have explicit authorization to assess. The inventory stores
+        metadata; it does not contact listed hosts. Scanning is scope-limited and does not exploit
         services, attempt passwords, or verify vulnerabilities.
       </footer>
     </main>
