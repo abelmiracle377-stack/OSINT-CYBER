@@ -5,6 +5,7 @@ The database stores asset metadata only. It does not initiate network activity.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
 
@@ -40,8 +41,17 @@ class AssetStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @contextmanager
+    def _session(self):
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._session() as connection:
             connection.executescript(SCHEMA)
 
     @staticmethod
@@ -55,7 +65,7 @@ class AssetStore:
         placeholders = ", ".join("?" for _ in fields)
         columns = ", ".join(fields)
         try:
-            with self._connect() as connection:
+            with self._session() as connection:
                 connection.execute(
                     f"INSERT INTO assets ({columns}) VALUES ({placeholders})",
                     values,
@@ -65,7 +75,7 @@ class AssetStore:
         return asset
 
     def get(self, asset_id: str) -> Asset | None:
-        with self._connect() as connection:
+        with self._session() as connection:
             row = connection.execute(
                 "SELECT * FROM assets WHERE asset_id = ?", (asset_id,)
             ).fetchone()
@@ -90,7 +100,7 @@ class AssetStore:
             params.append(criticality)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         params.extend([limit, offset])
-        with self._connect() as connection:
+        with self._session() as connection:
             rows = connection.execute(
                 f"SELECT * FROM assets{where} ORDER BY asset_id LIMIT ? OFFSET ?",
                 params,
@@ -107,7 +117,7 @@ class AssetStore:
         updated = validate_asset(record)
         values = updated.as_dict()
         try:
-            with self._connect() as connection:
+            with self._session() as connection:
                 connection.execute(
                     """UPDATE assets SET name=?, asset_type=?, address=?, owner=?,
                        environment=?, criticality=?, notes=?, created_at=? WHERE asset_id=?""",
@@ -122,12 +132,12 @@ class AssetStore:
         return updated
 
     def delete(self, asset_id: str) -> bool:
-        with self._connect() as connection:
+        with self._session() as connection:
             cursor = connection.execute("DELETE FROM assets WHERE asset_id = ?", (asset_id,))
             return cursor.rowcount == 1
 
     def count(self) -> int:
-        with self._connect() as connection:
+        with self._session() as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM assets").fetchone()
         return int(row["total"])
 
@@ -136,7 +146,7 @@ class AssetStore:
         from .inventory import validate_unique_assets
 
         assets = validate_unique_assets(records)
-        with self._connect() as connection:
+        with self._session() as connection:
             connection.execute("DELETE FROM assets")
             for asset in assets:
                 values = asset.as_dict()
