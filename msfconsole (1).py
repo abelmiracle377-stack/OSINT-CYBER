@@ -21,6 +21,7 @@ from osint_cyber.risk import prioritize_services
 from osint_cyber.reporting import build_report, to_markdown
 from osint_cyber.storage import AssetStore
 from osint_cyber.remediation import build_remediation_plan, summarize_plan
+from osint_cyber.controls import evaluate_asset_controls, summarize_controls
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
@@ -328,6 +329,24 @@ def api_risk_prioritize():
         return jsonify({"error": str(exc)}), 400
     return jsonify({"findings": findings})
 
+
+
+
+@app.post("/api/controls/evaluate")
+def api_controls_evaluate():
+    """Evaluate local inventory observations against simple defensive baselines."""
+    body = request.get_json(silent=True) or {}
+    assets = body.get("assets")
+    observations = body.get("observations_by_asset", {})
+    if not isinstance(assets, list) or len(assets) > 5000:
+        return jsonify({"error": "assets must be a list of at most 5000 records"}), 400
+    if not isinstance(observations, dict):
+        return jsonify({"error": "observations_by_asset must be an object"}), 400
+    try:
+        findings = evaluate_asset_controls(assets, observations)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"findings": findings, "summary": summarize_controls(findings)})
 
 
 @app.post("/api/remediation/plan")
