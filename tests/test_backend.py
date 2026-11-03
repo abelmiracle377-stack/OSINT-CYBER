@@ -48,6 +48,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("OSINT_ALLOWED_TARGETS", response.json["error"])
 
+    def test_nmap_grepable_output_is_parsed(self):
+        from unittest.mock import patch
+        output = "Host: 127.0.0.1 () Ports: 22/open/tcp//ssh///,80/open/tcp//http///"
+        fake = type("Completed", (), {"returncode": 0, "stdout": output, "stderr": ""})()
+        with patch.object(backend.shutil, "which", return_value="/usr/bin/nmap"), \
+             patch.object(backend.subprocess, "run", return_value=fake):
+            result = backend.scan_ports("127.0.0.1")
+        self.assertEqual([item["port"] for item in result], [22, 80])
+        self.assertEqual(result[0]["protocol"], "tcp")
+        self.assertEqual(result[0]["service"], "ssh")
+
     def test_analyze_returns_defensive_guidance(self):
         response = self.client.post(
             "/api/analyze",
