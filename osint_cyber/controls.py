@@ -89,7 +89,8 @@ def evaluate_asset_controls(
                 "service=http; service=https not present in supplied observations",
                 "Confirm whether HTTPS is available and ensure sensitive traffic uses TLS.",
             ))
-    findings.sort(key=lambda finding: (finding.level, finding.asset_id, finding.control_id))
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings.sort(key=lambda finding: (severity_order[finding.level], finding.asset_id, finding.control_id))
     return [finding.as_dict() for finding in findings]
 
 
