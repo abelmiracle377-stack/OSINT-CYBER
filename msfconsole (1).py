@@ -20,6 +20,7 @@ from osint_cyber.inventory import InventoryValidationError, validate_unique_asse
 from osint_cyber.risk import prioritize_services
 from osint_cyber.reporting import build_report, to_markdown
 from osint_cyber.storage import AssetStore
+from osint_cyber.remediation import build_remediation_plan, summarize_plan
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
@@ -326,6 +327,25 @@ def api_risk_prioritize():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"findings": findings})
+
+
+
+@app.post("/api/remediation/plan")
+def api_remediation_plan():
+    """Generate non-executing remediation tasks from submitted asset observations."""
+    body = request.get_json(silent=True) or {}
+    assets = body.get("assets")
+    observations = body.get("observations_by_asset", {})
+    priorities = body.get("priorities_by_asset", {})
+    if not isinstance(assets, list) or len(assets) > 5000:
+        return jsonify({"error": "assets must be a list of at most 5000 records"}), 400
+    if not isinstance(observations, dict) or not isinstance(priorities, dict):
+        return jsonify({"error": "observations_by_asset and priorities_by_asset must be objects"}), 400
+    try:
+        plan = build_remediation_plan(assets, observations, priorities)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"plan": plan, "summary": summarize_plan(plan)})
 
 
 @app.post("/api/report/markdown")
