@@ -124,6 +124,22 @@ class ApiTests(unittest.TestCase):
         )
         self.assertIn(response.status_code, (200, 204))
 
+    def test_remediation_plan_api_returns_planning_only_tasks(self):
+        response = self.client.post("/api/remediation/plan", json={
+            "assets": [{
+                "asset_id": "owned-app",
+                "address": "localhost",
+                "environment": "production",
+            }],
+            "observations_by_asset": {
+                "owned-app": [{"service": "telnet", "port": 23}],
+            },
+            "priorities_by_asset": {"owned-app": "high"},
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["summary"]["execution"], "planning_only")
+        self.assertEqual(response.json["plan"][0]["priority"], "high")
+
     def test_exploit_and_brute_routes_are_not_exposed(self):
         for route in ("/api/exploit", "/api/brute"):
             response = self.client.post(route, json={"target": "localhost"})
