@@ -1,171 +1,116 @@
-import React, { useState, useEffect } from 'react';
-import './App.css'; // Assuming basic CSS exists
+import React, { useState } from 'react';
+import './App.css';
 
-function App() {
-  const [target, setTarget] = useState('');
-  const [scanResult, setScanResult] = useState([]);
-  const [vulnTips, setVulnTips] = useState([]);
-  const [exploitLog, setExploitLog] = useState('');
-  const [bruteForceLog, setBruteForceLog] = useState([]);
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://127.0.0.1:5000';
+
+export default function App() {
+  const [target, setTarget] = useState('127.0.0.1');
+  const [scanResults, setScanResults] = useState([]);
+  const [recommendations, setRecommendations] = useState([]);
+  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // 1. Port Scan
-  const handleScan = async () => {
-    if (!target) return;
+  async function post(path, payload) {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+    return data;
+  }
+
+  async function handleScan(event) {
+    event.preventDefault();
     setLoading(true);
-    setScanResult([]);
-    
+    setMessage('Scanning only the configured authorized scope…');
+    setScanResults([]);
+    setRecommendations([]);
     try {
-      const res = await fetch('http://localhost:5000/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target })
-      });
-      const data = await res.json();
-      setScanResult(data.scan_results || []);
-    } catch (err) {
-      console.error(err);
-      alert("Error connecting to backend");
+      const data = await post('/api/scan', { target });
+      setScanResults(data.scan_results || []);
+      setMessage(`Inventory complete for ${data.target}. Open ports: ${(data.scan_results || []).length}.`);
+    } catch (error) {
+      setMessage(error.message);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // 2. Vulnerability Analysis
-  const handleVulnCheck = async () => {
+  async function handleAnalyze() {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/vuln', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target })
-      });
-      const data = await res.json();
-      setVulnTips(data.vulnerability_tips || []);
-    } catch (err) {
-      console.error(err);
+      const data = await post('/api/analyze', { scan_results: scanResults });
+      setRecommendations(data.recommendations || []);
+      setMessage('Defensive recommendations generated. These are guidance, not vulnerability findings.');
+    } catch (error) {
+      setMessage(error.message);
     } finally {
       setLoading(false);
     }
-  };
-
-  // 3. Metasploit Exploit
-  const handleExploit = async () => {
-    if (scanResult.length === 0) return alert("Please scan for ports first.");
-    setLoading(true);
-    // Use the first open port found
-    const portData = scanResult[0];
-    
-    try {
-      const res = await fetch('http://localhost:5000/api/exploit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          target: target, 
-          port: portData.port, 
-          service: portData.service 
-        })
-      });
-      const data = await res.json();
-      setExploitLog(data.output);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 4. Brute Force
-  const handleBrute = async () => {
-    if (scanResult.length === 0) return alert("Please scan for ports first.");
-    setLoading(true);
-    const portData = scanResult[0];
-
-    try {
-      const res = await fetch('http://localhost:5000/api/brute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          target: target, 
-          port: portData.port, 
-          service: portData.service 
-        })
-      });
-      const data = await res.json();
-      setBruteForceLog(data.attempts);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }
 
   return (
-    <div className="container">
-      <h1>WormGPT AI Security Scanner</h1>
-      
-      <div className="input-group">
-        <input 
-          type="text" 
-          placeholder="Enter IP or Website (e.g. 192.168.1.1)" 
+    <main className="container">
+      <header>
+        <h1>OSINT-CYBER</h1>
+        <p>Scoped network inventory and defensive configuration guidance.</p>
+      </header>
+
+      <form className="input-group" onSubmit={handleScan}>
+        <label htmlFor="target">Authorized target</label>
+        <input
+          id="target"
           value={target}
-          onChange={(e) => setTarget(e.target.value)}
+          onChange={(event) => setTarget(event.target.value)}
+          placeholder="127.0.0.1 or an approved hostname"
+          required
         />
-        <button onClick={handleScan} disabled={loading}>Scan Ports</button>
-      </div>
+        <button type="submit" disabled={loading}>Run inventory</button>
+      </form>
 
-      {loading && <div className="status">Processing...</div>}
+      <p className="status" role="status" aria-live="polite">{message}</p>
 
-      <div className="grid">
-        {/* Scan Results */}
-        <div className="card">
-          <h3>Open Ports</h3>
+      <section className="card" aria-labelledby="ports-heading">
+        <h2 id="ports-heading">Open TCP ports</h2>
+        {scanResults.length ? (
+          <table>
+            <thead><tr><th>Port</th><th>Service</th><th>Version</th><th>State</th></tr></thead>
+            <tbody>
+              {scanResults.map((item) => (
+                <tr key={`${item.protocol}-${item.port}`}>
+                  <td>{item.port}/{item.protocol}</td>
+                  <td>{item.service}</td>
+                  <td>{item.version}</td>
+                  <td>{item.state}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p>No inventory results yet.</p>}
+        <button type="button" onClick={handleAnalyze} disabled={loading || !scanResults.length}>
+          Get defensive recommendations
+        </button>
+      </section>
+
+      <section className="card" aria-labelledby="guidance-heading">
+        <h2 id="guidance-heading">Defensive recommendations</h2>
+        {recommendations.length ? (
           <ul>
-            {scanResult.map((p, idx) => (
-              <li key={idx}>
-                <strong>{p.port}</strong> / {p.service} ({p.state})
+            {recommendations.map((item) => (
+              <li key={`${item.port}-${item.service}`}>
+                <strong>{item.service} on port {item.port}:</strong> {item.recommendation}
               </li>
             ))}
           </ul>
-        </div>
+        ) : <p>Run an inventory and request guidance to see recommendations.</p>}
+      </section>
 
-        {/* Vulnerability Tips */}
-        <div className="card">
-          <h3>SQL Injection Tips</h3>
-          <ul>
-            {vulnTips.map((tip, idx) => (
-              <li key={idx}>{tip}</li>
-            ))}
-          </ul>
-        </div>
-      </div>
-
-      <div className="actions">
-        <button onClick={handleExploit} className="btn-exploit">
-          Run Metasploit Exploit
-        </button>
-        <button onClick={handleBrute} className="btn-brute">
-          Brute Force Attack
-        </button>
-      </div>
-
-      {/* Results Panels */}
-      <div className="results">
-        <div className="log-panel">
-          <h4>Metasploit Output:</h4>
-          <pre>{exploitLog || 'Waiting for exploit...'}</pre>
-        </div>
-        <div className="log-panel">
-          <h4>Brute Force Attempts:</h4>
-          <ul>
-            {bruteForceLog.length > 0 ? bruteForceLog.map((log, idx) => (
-              <li key={idx}>{log}</li>
-            )) : 'Waiting for brute force...'}
-          </ul>
-        </div>
-      </div>
-    </div>
+      <footer>
+        Use only assets you own or are explicitly authorized to assess. This tool does not exploit
+        services, attempt passwords, or verify vulnerabilities.
+      </footer>
+    </main>
   );
 }
-
-export default App;
