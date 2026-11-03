@@ -8,3 +8,6 @@ node_modules/
 build/
 coverage/
 .pytest_cache/
+
+*.sqlite3
+*.db
