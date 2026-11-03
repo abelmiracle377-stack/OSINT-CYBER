@@ -71,6 +71,38 @@ class ApiTests(unittest.TestCase):
         response = self.client.post("/api/analyze", json={"scan_results": [{}] * 1001})
         self.assertEqual(response.status_code, 400)
 
+    def test_asset_api_create_list_update_delete(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from osint_cyber.storage import AssetStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = AssetStore(Path(directory) / "test.sqlite3")
+            with patch.object(backend, "ASSET_STORE", store):
+                payload = {
+                    "asset_id": "api-asset-1",
+                    "name": "Local app",
+                    "asset_type": "web_app",
+                    "address": "localhost",
+                    "environment": "test",
+                    "criticality": "low",
+                }
+                created = self.client.post("/api/assets", json=payload)
+                self.assertEqual(created.status_code, 201)
+                listed = self.client.get("/api/assets")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.json["total"], 1)
+                changed = self.client.patch(
+                    "/api/assets/api-asset-1", json={"criticality": "high"}
+                )
+                self.assertEqual(changed.status_code, 200)
+                self.assertEqual(changed.json["asset"]["criticality"], "high")
+                deleted = self.client.delete("/api/assets/api-asset-1")
+                self.assertEqual(deleted.status_code, 200)
+                missing = self.client.get("/api/assets/api-asset-1")
+                self.assertEqual(missing.status_code, 404)
+
     def test_exploit_and_brute_routes_are_not_exposed(self):
         for route in ("/api/exploit", "/api/brute"):
             response = self.client.post(route, json={"target": "localhost"})
