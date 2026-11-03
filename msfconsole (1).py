@@ -117,7 +117,7 @@ def scan_ports(target: str) -> list[dict[str, Any]]:
         port_section = line.split("Ports:", 1)[1].split("Ignored State:", 1)[0]
         for entry in port_section.split(","):
             parts = entry.strip().split("/")
-            if len(parts) < 7 or parts[2] != "open":
+            if len(parts) < 7 or parts[1] != "open":
                 continue
             try:
                 port = int(parts[0])
@@ -126,10 +126,10 @@ def scan_ports(target: str) -> list[dict[str, Any]]:
             found.append(
                 {
                     "port": port,
-                    "protocol": parts[1],
+                    "protocol": parts[2],
                     "service": parts[4] or "unknown",
                     "version": parts[6] or "not identified",
-                    "state": parts[2],
+                    "state": parts[1],
                 }
             )
     return found
