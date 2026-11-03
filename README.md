@@ -9,6 +9,7 @@ A small, local-first network inventory tool with defensive configuration guidanc
 - Defensive service recommendations and explainable service prioritization
 - Validated, SQLite-persisted asset inventory with CRUD endpoints, duplicate detection, and CSV import/export
 - JSON and Markdown inventory report generation
+- Rule-based remediation planning with stable task IDs, service-specific guidance, verification steps, ownership, and priority summaries
 - Flask API and a React UI
 - Regression tests for target validation, Nmap parsing, inventory, prioritization, CSV, and reports
 
@@ -53,9 +54,10 @@ The API listens on `127.0.0.1:5000` by default. Do not expose the development se
 - `GET /api/assets`, `POST /api/assets`, `GET /api/assets/<asset_id>`, `PATCH /api/assets/<asset_id>`, `DELETE /api/assets/<asset_id>` — local inventory CRUD
 - `POST /api/inventory/summary` — validates asset records and returns aggregate counts
 - `POST /api/risk/prioritize` — applies transparent heuristic prioritization to service observations
+- `POST /api/remediation/plan` — returns a prioritized remediation plan; planning only, no changes are applied to hosts
 - `POST /api/report/markdown` — validates assets and returns a Markdown report plus its JSON structure
 
-Out-of-scope targets return HTTP 400. Nmap execution uses an argument list (not a shell string) and has a timeout. The service-analysis output is guidance, not a vulnerability verdict. Risk prioritization is a transparent heuristic based on service, declared asset criticality, and environment; it is not a CVE score or proof of exploitability. Asset inventory functions are local data processing and do not contact listed hosts. SQLite is stored at `OSINT_DB_PATH` (default `osint_cyber.sqlite3`); protect the database file and configure authentication/network controls before exposing the API.
+Out-of-scope targets return HTTP 400. Nmap execution uses an argument list (not a shell string) and has a timeout. The service-analysis output is guidance, not a vulnerability verdict. Risk prioritization and remediation guidance are transparent heuristics based on service, declared asset criticality, and environment; it is not a CVE score or proof of exploitability. Asset inventory functions are local data processing and do not contact listed hosts. SQLite is stored at `OSINT_DB_PATH` (default `osint_cyber.sqlite3`); protect the database file and configure authentication/network controls before exposing the API.
 
 ## Tests
 
