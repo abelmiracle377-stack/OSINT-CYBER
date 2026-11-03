@@ -140,6 +140,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json["summary"]["execution"], "planning_only")
         self.assertEqual(response.json["plan"][0]["priority"], "high")
 
+    def test_controls_api_flags_production_telnet(self):
+        response = self.client.post("/api/controls/evaluate", json={
+            "assets": [{
+                "asset_id": "authorized-prod",
+                "address": "localhost",
+                "environment": "production",
+                "owner": "Platform",
+            }],
+            "observations_by_asset": {
+                "authorized-prod": [{"service": "telnet", "port": 23}],
+            },
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any(
+            finding["control_id"] == "NET-001"
+            for finding in response.json["findings"]
+        ))
+
     def test_exploit_and_brute_routes_are_not_exposed(self):
         for route in ("/api/exploit", "/api/brute"):
             response = self.client.post(route, json={"target": "localhost"})
