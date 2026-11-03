@@ -16,6 +16,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request
+from osint_cyber.inventory import InventoryValidationError, validate_unique_assets, summarize_inventory
+from osint_cyber.risk import prioritize_services
+from osint_cyber.reporting import build_report, to_markdown
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
@@ -208,6 +211,54 @@ def api_analyze():
         if isinstance(item, dict) and str(item.get("port", "")).isdigit()
     ]
     return jsonify({"recommendations": analyze_services(safe_results)})
+
+
+
+@app.post("/api/inventory/summary")
+def api_inventory_summary():
+    """Validate a small submitted asset list and return aggregate counts."""
+    body = request.get_json(silent=True) or {}
+    records = body.get("assets")
+    if not isinstance(records, list) or len(records) > 5000:
+        return jsonify({"error": "assets must be a list of at most 5000 records"}), 400
+    try:
+        assets = validate_unique_assets(records)
+    except (InventoryValidationError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"summary": summarize_inventory(assets), "assets": [item.as_dict() for item in assets]})
+
+
+@app.post("/api/risk/prioritize")
+def api_risk_prioritize():
+    """Prioritize provided observations using explainable heuristics."""
+    body = request.get_json(silent=True) or {}
+    results = body.get("scan_results")
+    if not isinstance(results, list) or len(results) > 1000:
+        return jsonify({"error": "scan_results must be a list of at most 1000 entries"}), 400
+    try:
+        findings = prioritize_services(
+            results,
+            str(body.get("asset_criticality", "medium")),
+            str(body.get("environment", "unknown")),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"findings": findings})
+
+
+@app.post("/api/report/markdown")
+def api_report_markdown():
+    """Render a Markdown report for validated asset metadata."""
+    body = request.get_json(silent=True) or {}
+    records = body.get("assets")
+    if not isinstance(records, list) or len(records) > 5000:
+        return jsonify({"error": "assets must be a list of at most 5000 records"}), 400
+    try:
+        assets = validate_unique_assets(records)
+        report = build_report(assets, body.get("scan_results"), body.get("recommendations"))
+    except (InventoryValidationError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"markdown": to_markdown(report), "report": report})
 
 
 @app.errorhandler(405)
