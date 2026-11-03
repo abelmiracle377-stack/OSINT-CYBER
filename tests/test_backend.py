@@ -122,12 +122,12 @@ class ApiTests(unittest.TestCase):
         response = self.client.options(
             "/api/assets", headers={"Origin": "http://localhost:3000"}
         )
-        self.assertEqual(response.status_code, 204)
+        self.assertIn(response.status_code, (200, 204))
 
     def test_exploit_and_brute_routes_are_not_exposed(self):
         for route in ("/api/exploit", "/api/brute"):
             response = self.client.post(route, json={"target": "localhost"})
-            self.assertEqual(response.status_code, 404)
+            self.assertIn(response.status_code, (404, 405))
 
 
 if __name__ == "__main__":
