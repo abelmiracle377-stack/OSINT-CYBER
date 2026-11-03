@@ -103,6 +103,27 @@ class ApiTests(unittest.TestCase):
                 missing = self.client.get("/api/assets/api-asset-1")
                 self.assertEqual(missing.status_code, 404)
 
+    def test_cors_allows_configured_local_origin(self):
+        response = self.client.get(
+            "/api/health", headers={"Origin": "http://localhost:3000"}
+        )
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "http://localhost:3000",
+        )
+
+    def test_cors_does_not_allow_arbitrary_origin(self):
+        response = self.client.get(
+            "/api/health", headers={"Origin": "https://attacker.invalid"}
+        )
+        self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
+
+    def test_preflight_is_supported(self):
+        response = self.client.options(
+            "/api/assets", headers={"Origin": "http://localhost:3000"}
+        )
+        self.assertEqual(response.status_code, 204)
+
     def test_exploit_and_brute_routes_are_not_exposed(self):
         for route in ("/api/exploit", "/api/brute"):
             response = self.client.post(route, json={"target": "localhost"})
