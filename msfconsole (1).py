@@ -24,6 +24,25 @@ from osint_cyber.storage import AssetStore
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
 app.config["JSON_SORT_KEYS"] = False
+FRONTEND_ORIGINS = {
+    origin.strip().rstrip("/")
+    for origin in os.environ.get(
+        "FRONTEND_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+}
+
+@app.after_request
+def add_cors_headers(response):
+    """Allow configured local frontend origins without wildcard credentials."""
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin in FRONTEND_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,DELETE,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Max-Age"] = "600"
+    return response
 
 NMAP_BIN = os.environ.get("NMAP_BIN", "nmap")
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "90"))
@@ -174,6 +193,11 @@ def analyze_services(scan_results: list[dict[str, Any]]) -> list[dict[str, str]]
                 }
             )
     return guidance
+
+
+@app.route("/api/<path:unused>", methods=["OPTIONS"])
+def api_preflight(unused: str):
+    return ("", 204)
 
 
 @app.errorhandler(413)
