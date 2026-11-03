@@ -16,7 +16,29 @@ from urllib.parse import urlparse
 
 HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 ALLOWED_SCHEMES = {"http", "https"}
-CSV_FIELDS = ("asset_id", "name", "asset_type", "address", "owner", "environment", "criticality", "notes", "created_at")
+CSV_FIELDS = (
+    "asset_id",
+    "name",
+    "asset_type",
+    "address",
+    "owner",
+    "environment",
+    "criticality",
+    "notes",
+    "created_at",
+)
+
+ASSET_TYPES = {
+    "domain",
+    "ip",
+    "web_app",
+    "server",
+    "endpoint",
+    "cloud_resource",
+    "other",
+}
+ENVIRONMENTS = {"production", "staging", "development", "test", "unknown"}
+CRITICALITIES = {"low", "medium", "high", "critical"}
 
 
 class InventoryValidationError(ValueError):
@@ -98,16 +120,16 @@ def validate_asset(record: dict[str, object]) -> Asset:
         raise InventoryValidationError("asset_id contains unsupported characters")
     name = text("name", required=True, max_length=120)
     asset_type = text("asset_type", required=True, max_length=40).lower()
-    if asset_type not in {"domain", "ip", "web_app", "server", "endpoint", "cloud_resource", "other"}:
+    if asset_type not in ASSET_TYPES:
         raise InventoryValidationError("asset_type is not supported")
 
     address = normalize_address(text("address", required=True, max_length=2048))
     owner = text("owner", max_length=120)
     environment = text("environment", max_length=40).lower() or "unknown"
-    if environment not in {"production", "staging", "development", "test", "unknown"}:
+    if environment not in ENVIRONMENTS:
         raise InventoryValidationError("environment is not supported")
     criticality = text("criticality", max_length=20).lower() or "medium"
-    if criticality not in {"low", "medium", "high", "critical"}:
+    if criticality not in CRITICALITIES:
         raise InventoryValidationError("criticality must be low, medium, high, or critical")
     notes = text("notes", max_length=2000)
     created_at = text("created_at", max_length=40) or utc_now()
@@ -164,6 +186,7 @@ def export_csv(assets: Iterable[Asset]) -> str:
 def summarize_inventory(assets: Iterable[Asset]) -> dict[str, object]:
     """Produce counts by environment, criticality, and asset type."""
     items = list(assets)
+
     def count(field: str) -> dict[str, int]:
         result: dict[str, int] = {}
         for item in items:
