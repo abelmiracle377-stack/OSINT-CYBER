@@ -19,6 +19,7 @@ from flask import Flask, jsonify, request
 from osint_cyber.inventory import InventoryValidationError, validate_unique_assets, summarize_inventory
 from osint_cyber.risk import prioritize_services
 from osint_cyber.reporting import build_report, to_markdown
+from osint_cyber.storage import AssetStore
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024
@@ -26,6 +27,7 @@ app.config["JSON_SORT_KEYS"] = False
 
 NMAP_BIN = os.environ.get("NMAP_BIN", "nmap")
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "90"))
+ASSET_STORE = AssetStore(os.environ.get("OSINT_DB_PATH", "osint_cyber.sqlite3"))
 ALLOWED_TARGETS = {
     value.strip().lower()
     for value in os.environ.get("OSINT_ALLOWED_TARGETS", "127.0.0.1,localhost,::1").split(",")
@@ -212,6 +214,62 @@ def api_analyze():
     ]
     return jsonify({"recommendations": analyze_services(safe_results)})
 
+
+
+
+@app.get("/api/assets")
+def api_assets_list():
+    """List locally stored inventory metadata with bounded pagination."""
+    try:
+        limit = int(request.args.get("limit", "500"))
+        offset = int(request.args.get("offset", "0"))
+        assets = ASSET_STORE.list(
+            environment=request.args.get("environment") or None,
+            criticality=request.args.get("criticality") or None,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"total": ASSET_STORE.count(), "assets": [asset.as_dict() for asset in assets]})
+
+
+@app.post("/api/assets")
+def api_assets_create():
+    """Persist one validated inventory record."""
+    body = request.get_json(silent=True) or {}
+    try:
+        asset = ASSET_STORE.create(body)
+    except (InventoryValidationError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"asset": asset.as_dict()}), 201
+
+
+@app.get("/api/assets/<asset_id>")
+def api_assets_get(asset_id: str):
+    asset = ASSET_STORE.get(asset_id)
+    if asset is None:
+        return jsonify({"error": "asset not found"}), 404
+    return jsonify({"asset": asset.as_dict()})
+
+
+@app.patch("/api/assets/<asset_id>")
+def api_assets_update(asset_id: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        asset = ASSET_STORE.update(asset_id, body)
+    except KeyError:
+        return jsonify({"error": "asset not found"}), 404
+    except (InventoryValidationError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"asset": asset.as_dict()})
+
+
+@app.delete("/api/assets/<asset_id>")
+def api_assets_delete(asset_id: str):
+    if not ASSET_STORE.delete(asset_id):
+        return jsonify({"error": "asset not found"}), 404
+    return jsonify({"deleted": asset_id})
 
 
 @app.post("/api/inventory/summary")
